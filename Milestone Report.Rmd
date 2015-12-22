@@ -1,0 +1,237 @@
+---
+title: "Data Science Capstone Milestone Report"
+author: "Kayode, John Olusola"
+date: "21 December 2015"
+output: html_document
+---
+```{r, echo=FALSE}
+# setwd(paste0(getwd(), "/Datascience Capstone"))
+options(java.parameters = "-Xmx2g" )
+options(mc.cores=1)
+```
+
+## Introduction
+
+This document is produced as a Milestone report of the Data Science Specialization Capstone offered by [Johns Hopkins University](https://www.jhu.edu/) on [Coursera](https://www.coursera.org/jhu).
+
+The report attempts to:
+
+1. Demonstrate that the data was downloaded and successfully loaded in.
+2. Create a basic report of summary statistics about the data sets.
+3. Report any interesting findings amassed so far.
+4. Get feedback on plans for creating a prediction algorithm and Shiny app.
+
+A number of popular R libraries were used in the course of producing this report some of which are *stringi*, *tm* and *ggplot2*.
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+# Load required libraries
+library(stringi)
+library(stringr)
+library(qdap)
+library(tm)
+library(dplyr)
+library(ggplot2)
+library(quanteda)
+library(wordcloud)
+```
+
+## Data Sources and Processing
+
+The raw data is sourced from a corpus called [HC Corpora](www.corpora.heliohost.org) and downloaded via a [link](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip) provided in a Data Science Capstone [course page](https://class.coursera.org/dsscapstone-006/wiki/Task_0). Although the downloaded dataset consists of data of multiple languages, the English dataset was used for this project and report.
+
+The script used to download first checks if the dataset had been previously downloaded otherwise it downloads and extracts some information about each file in the English dataset. Below is a summary statistics of the raw dataset.
+
+```{r raw data, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# The code below was used to download and extract information about the datafiles
+fileURL <- "https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip"
+filePath <- "Coursera-SwiftKey.zip"
+if(!file.exists(filePath)) {
+    download.file(fileURL, destfile = filePath)
+    unlink(fileURL) 
+    unzip(filePath)
+    }
+
+# Define file paths and the list of filenames
+fPath <- "./final/en_US"
+fInfo <- file.info(list.files(fPath, pattern="[.]txt", full.names = TRUE, recursive = TRUE))
+fileList <- as.character(rownames(fInfo))
+
+# Create a function to read the data and determine some summary statistics of data in the file
+chkStats <- function(fL){
+    con <- file(fL, "r") # Create connection to datafile to read
+    dt <- readLines(con, encoding="UTF-8", warn = FALSE)
+    close(con)
+    stri_stats_general(dt)
+}
+
+# Obtain general statistics for raw data file 
+gStats <- sapply(fileList, chkStats)
+dataFiles <- fInfo %>%
+    mutate(filename=str_extract(fileList, "en_US.[a-z]*.txt"), size.MB=round(size/(2^20), 2)) %>%
+    select(filename, size.MB)
+dataStats <- cbind.data.frame(dataFiles, t(gStats))
+row.names(dataStats) <- c("1.", "2.", "3.")
+
+# Show some summary statistics of the raw datasets
+print(dataStats)
+```
+
+### Data Sampling
+
+As recommended in the course instructions, a sample of the dataset can be drawn to represent the entire dataset. For the purposes of this report a function is created to read the raw data files, take a random sample comprising of 20000 lines from each datafile (blogs, news, twitter), write the sample drawn to local disk so it can be used for further processing while dislaying some general statistics of the sampled text files.
+
+Some general characteristics of the sampled files are shown below. As seen below, blogs have more average characters per line (4552997 characters in 20000 lines) while twitter has the least characters per line (1376324 characters in 20000 lines).
+```{r samples, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# Create function to sample 20000 lines from each of the main datasets for exploratory analysis
+set.seed(80)
+sampler <- function(fL){
+    con <- file(fL, "r") # Create connection to datafile to read
+    dt <- readLines(con, encoding="UTF-8", warn = FALSE) # Read datafile
+    close(con) # Close file connection
+    sm <- sample(dt, 20000) # Sample a portion of the raw data set
+    if(!file.exists("./datasample")) {dir.create("./datasample")}
+    sF <- paste0("./datasample/sample.", str_extract(fL, "en_US.[a-z]*.txt")) # generate filename
+    file.create(sF) # Create sample file
+    write(sm, file = sF) # Write the sampled data to file
+    stri_stats_general(sm) # Provide General statistics of the sampled data
+}
+
+# Create sample data and View some statistics of the sample data
+dataSample <- sapply(fileList, sampler)
+sampleInfo <- t(as.data.frame(dataSample))
+row.names(sampleInfo) <- c("sample.blogs", "sample.news", "sample.twitter")
+print(sampleInfo) # Show statistics
+```
+
+### Sample Data Cleaning
+
+The sample data obtained in the step above was loaded into R with some initial cleaning which included:
+
+- the convertion of all characters to UTF-8 character encoding, 
+- the removal of numbers and punctuations as well as 
+- the removal of URLs.
+
+Further data cleaning was automatically done with the *quanteda* R package
+
+```{r cleanSamples, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# Create a file list of text data sampled from the raw data 
+fList <- as.character(rownames(file.info(list.files('./datasample', full.names = TRUE))))
+
+# Create function to read and do initial data cleaning of sampled data
+sampleData <- function(fL){
+    con <- file(fL, "r") # Create connection to datafile to read
+    dt <- readLines(con, encoding="UTF-8", warn = FALSE)
+    close(con)
+    ds <- iconv(enc2utf8(dt), sub = "byte") # Convert all text to UTF-8
+    ds <- gsub("[^[:alpha:][:space:]]*", "", ds) # Remove Number and Punctuations
+    ds <- gsub("http[^[:space:]]*", "", ds) # Remove URL
+    ds
+}
+blogs <- sampleData(fList[1]); news <- sampleData(fList[2]); twitter <- sampleData(fList[3])
+```
+
+This step produced files with the following word counts:
+```{r wordCount, echo=FALSE}
+paste("Word Count for Blogs sample data: ", sum(word_count(blogs), na.rm=TRUE), sep="") # View Word Counts for cleaned Blogs Sample
+paste("Word Count for News sample data: ", sum(word_count(news), na.rm=TRUE), sep="") # View Word Counts for cleaned News Sample
+paste("Word Count for Twitter sample data: ", sum(word_count(twitter), na.rm=TRUE), sep="") # View Word Counts for cleaned Twitter Sample
+```
+
+## N-Grams Creation and Tokenization
+
+In lexical analysis, as described by [Wikipedia](https://en.wikipedia.org/wiki/Tokenization_(lexical_analysis)), tokenization is the process of breaking a stream of text up into words, phrases, symbols, or other meaningful elements called tokens. The list of tokens becomes input for further processing such as parsing or text mining.
+
+The sample data was further cleaned and tokenized with *quanteda* R package to generate a contiguous sequence of *n* items from a given sequence of text referred to as *n*-gram. The frequencies of the words occuring was then computed into a dataframe. The dataframe was used to plot histograms of the uni-grams, bi-grams and tri-grams of text generated.
+
+During further processing of the sample dataset, stopwords and profanity were removed when creating unigrams, however these were left when creating bigrams and trigrams since they may be useful in word associations. This will however be investigated further to see whether it actually impacts the predictions of the model to be developed.
+
+```{r tokenize, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# Create corpus object from the combined sampled data
+myCorpus <- corpus(c(blogs, news, twitter)) # All sample data
+saveRDS(myCorpus, file = "cleanCorpus.RDS") # Save a copy of the corpus 
+
+# define profane text
+profanity <- as.character(read.table("profanity.txt", sep = ",")$V1)
+
+# Create uni- bi- and tri- Grams word tokens
+dfm.uniGrams <- dfm(myCorpus, verbose=FALSE, ngrams=1, ignoredFeatures=c(profanity, stopwords("english"))) # Create uni-grams
+dfm.biGrams <- dfm(myCorpus, verbose=FALSE, ngrams=2, concatenator=" ") # Create bi-grams
+dfm.triGrams <- dfm(myCorpus, verbose=FALSE, ngrams=3, concatenator=" ") # Create tri-grams
+
+# Create function to create document frequency dataframe for generating plots
+getDF <- function(x){
+    Df <- as.data.frame(as.matrix(docfreq(x)))
+    Df <- sort(rowSums(Df), decreasing = TRUE)
+    Df <- data.frame(Words=names(Df), Frequency=Df)
+    Df
+}
+```
+
+## Exploratory Plots
+
+### Top Unigrams
+
+A frequency plot showing the top 25 most frequently occuring uni-grams from the tokenization process is shown below:
+
+```{r plotUni, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# Show the first 25 most frequently occuring unigram words
+plotUni <- ggplot(getDF(dfm.uniGrams)[1:25,], aes(x=reorder(Words, Frequency), y=Frequency)) +
+    geom_bar(stat = "identity", fill="maroon") +  coord_flip() +
+    theme(legend.title=element_blank()) +
+    xlab("Unigram") + ylab("Frequency") +
+    labs(title = "Top Unigrams by Frequency")
+
+print(plotUni) # View the uni-gram plot
+```
+
+### Top Bigrams
+
+A frequency plot showing the top 25 most frequently occuring bi-grams from the tokenization process is shown below:
+
+```{r plotBi, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# Show the first 25 most frequently occuring bigram words
+plotBi <- ggplot(getDF(dfm.biGrams)[1:25,], aes(x=reorder(Words, Frequency), y=Frequency)) +
+    geom_bar(stat = "identity", fill="purple") +  coord_flip() +
+    theme(legend.title=element_blank()) +
+    xlab("Bigram") + ylab("Frequency") +
+    labs(title = "Top Bigrams by Frequency")
+
+print(plotBi) # View the bi-gram plot
+```
+
+### Top Trigrams
+
+A frequency plot showing the top 25 most frequently occuring tri-grams from the tokenization process is shown below:
+
+```{r plotTri, cache=TRUE, message=FALSE, warning=FALSE, echo=FALSE}
+# Show the first 25 most frequently occuring trigram words
+plotTri <- ggplot(getDF(dfm.triGrams)[1:25,], aes(x=reorder(Words, Frequency), y=Frequency)) +
+    geom_bar(stat = "identity", fill="darkgreen") +  coord_flip() +
+    theme(legend.title=element_blank()) +
+    xlab("Trigram") + ylab("Frequency") +
+    labs(title = "Top Trigrams by Frequency")
+
+print(plotTri) # View the tri-gram plot
+```
+
+A word cloud showing most occuring words in the entire sample dataset is shown below. Only words with a minimum frequency of 100 were included in the word cloud.
+
+```{r, warning=FALSE, cache=TRUE, message=FALSE, echo=FALSE}
+# Show word cloud for most occuring words
+plot(dfm.uniGrams, min.freq = 100, random.order = FALSE, 
+              random.color = TRUE, rot.per = .2, colors = sample(colors()[2:128], 10))
+
+```
+
+
+## Conclusion
+
+On a final note is was observed that the size of the raw dataset is considerably large and samples drawn from the raw dataset may have to be small enough to save significant processing time.
+
+The next thing to do will involve the creation of a shiny app to predict next words given a word or more. It may require that more n-grams would be created to increase the accuracy of the prediction algorithm
+
+Due to the expectation of this report to be concise and easy to understand by non data scientists, the codes for performing the various analyses were not included in the report (echo=FALSE, for data scientists), however the detailed scripts can be found on github.
+
+
+
+
+
